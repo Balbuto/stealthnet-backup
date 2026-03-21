@@ -1,6 +1,6 @@
 # 🚀 StealthNet Backup Installer
 
-[![Version](https://img.shields.io/badge/version-0.8--beta-blue.svg)](https://github.com/Balbuto/stealthnet-backup)
+[![Version](https://img.shields.io/badge/version-0.9--beta-blue.svg)](https://github.com/Balbuto/stealthnet-backup)
 [![Bash](https://img.shields.io/badge/bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-orange.svg)](https://ubuntu.com/)
 [![Docker](https://img.shields.io/badge/docker-required-blue.svg)](https://docker.com/)
