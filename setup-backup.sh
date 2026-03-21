@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================
-# StealthNet Backup Installer (VERSION 0.8-beta)
+# StealthNet Backup Installer (VERSION 0.9-beta)
 # ============================================
 # Скачай и запусти: curl -fsSL ... | sudo bash
+# Или: curl -fsSL ... | sudo bash -s < /dev/tty
 # ============================================
 if [[ -z "${BASH_VERSINFO[0]:-}" ]] || (( BASH_VERSINFO[0] < 4 )); then
 echo -e "\033[0;31m[ОШИБКА]\033[0m Требуется Bash 4.0 или выше"
@@ -94,10 +95,10 @@ echo -ne " [${default}]: "
 else
 echo -ne ": "
 fi
-if ! read -r value; then
-error "Ввод прерван пользователем"
-EXIT_CODE=1
-return 1
+if [[ -t 0 ]]; then
+read -r value
+else
+read -r value < /dev/tty
 fi
 if [[ -z "$value" && -n "$default" ]]; then
 value="$default"
@@ -115,12 +116,14 @@ local yn="д/н"
 [[ "$default" == "n" ]] && yn="д/Н"
 while true; do
 echo -ne "${BLUE}[ПОДТВЕРЖДЕНИЕ]${NC} ${prompt} [${yn}]: "
-if ! read -r answer; then
-error "Ввод прерван пользователем"
-EXIT_CODE=1
-return 1
+if [[ -t 0 ]]; then
+read -r answer
+else
+read -r answer < /dev/tty
 fi
-[[ -z "$answer" ]] && answer="$default"
+if [[ -z "$answer" ]]; then
+answer="$default"
+fi
 case "$answer" in
 [ДдYy]* ) return 0 ;;
 [НнNn]* ) return 1 ;;
@@ -180,6 +183,18 @@ echo "$value"
 fi
 }
 # ============================================
+# Валидация таймаута уведомлений
+# ============================================
+validate_notification_timeout() {
+local value="$1"
+if [[ ! "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 10 ]] || [[ "$value" -gt 300 ]]; then
+warn "NOTIFICATION_TIMEOUT вне диапазона 10-300, используется 60"
+echo "60"
+else
+echo "$value"
+fi
+}
+# ============================================
 # Валидация cron-расписания
 # ============================================
 validate_cron_schedule() {
@@ -217,18 +232,6 @@ error "Дни недели должны быть 0-7"
 return 1
 fi
 return 0
-}
-# ============================================
-# Валидация таймаута уведомлений
-# ============================================
-validate_notification_timeout() {
-local value="$1"
-if [[ ! "$value" =~ ^[0-9]+$ ]] || [[ "$value" -lt 10 ]] || [[ "$value" -gt 300 ]]; then
-warn "NOTIFICATION_TIMEOUT вне диапазона 10-300, используется 60"
-echo "60"
-else
-echo "$value"
-fi
 }
 # ============================================
 # Проверка и установка jq/yq
@@ -685,6 +688,7 @@ readonly NOTIFICATION_TIMEOUT_DEFAULT=60
 readonly COMPRESSION_LEVEL_MIN=1
 readonly COMPRESSION_LEVEL_MAX=9
 readonly MAX_FILENAME_LENGTH=200
+readonly LOCK_MAX_AGE=3600
 PANEL_DIR="${PANEL_DIR}"
 PANEL_ENV_FILE="\${PANEL_DIR}/.env"
 BASE_DIR="${INSTALL_DIR}"
@@ -774,8 +778,8 @@ log "ERROR" "Переменная $v не задана"
 exit 1
 fi
 done
-if [[ "$BACKUP_DIR" == "/" ]]; then
-log "ERROR" "BACKUP_DIR не может быть корневым"
+if [[ "$BACKUP_DIR" == "/" ]] || [[ -z "$BACKUP_DIR" ]]; then
+log "ERROR" "BACKUP_DIR не может быть корневым или пустым"
 exit 1
 fi
 }
@@ -861,7 +865,7 @@ check_disk_space() {
 local dir="${1:-$BACKUP_DIR}"
 local min_kb="${2:-${MIN_DISK_SPACE_KB:-1048576}}"
 local free mount_opts free_inodes
-if [[ -z "$dir" ]] || [[ "$dir" == "/" ]]; then
+if [[ -z "$dir" ]] || [[ "$dir" == "/" ]] || [[ ! -d "$dir" ]]; then
 log "ERROR" "Некорректная директория для проверки места"
 return 1
 fi
@@ -921,16 +925,18 @@ log "ERROR" "Не удалось создать директорию для lock
 return 1
 fi
 if [[ -f "$lock_file" ]]; then
-local old_pid
+local old_pid lock_age
 old_pid=$(cat "$lock_file" 2>/dev/null || echo "")
+lock_age=$(($(date +%s) - $(stat -c %Y "$lock_file" 2>/dev/null || echo 0)))
 if [[ -n "$old_pid" ]] && ! kill -0 "$old_pid" 2>/dev/null; then
 log "WARN" "Stale lock file (PID $old_pid не существует)"
 rm -f "$lock_file"
+elif [[ $lock_age -gt ${LOCK_MAX_AGE:-3600} ]]; then
+log "WARN" "Stale lock (>1 час), удаляем"
+rm -f "$lock_file"
 fi
 fi
-exec {fd}>"$lock_file" 2>/dev/null
-local exec_status=$?
-if [[ $exec_status -ne 0 ]]; then
+if ! exec {fd}>"$lock_file" 2>/dev/null; then
 log "ERROR" "Не удалось открыть lock файл"
 return 1
 fi
@@ -971,7 +977,7 @@ return 0
 verify_backup_path() {
 local file="$1"
 local real_file real_dir
-if [[ -z "$file" ]] || [[ -z "$BACKUP_DIR" ]]; then
+if [[ -z "$file" ]] || [[ -z "$BACKUP_DIR" ]] || [[ ! -d "$BACKUP_DIR" ]]; then
 return 1
 fi
 real_file=$(realpath -e "$file" 2>/dev/null) || return 1
@@ -1378,7 +1384,7 @@ cleanup_restore() {
 [[ -n "$TMP_SQL" && -f "$TMP_SQL" ]] && rm -f "$TMP_SQL"
 timeout 10 docker exec "$DB_CONTAINER" rm -f "/tmp/.pgpass" > /dev/null 2>&1 || true
 }
-trap cleanup_restore EXIT INT TERM QUIT HUP
+trap 'cleanup_restore; exit $?' EXIT INT TERM QUIT HUP
 show_help() {
 cat << EOF
 Использование: $0 <источник> [опции]
@@ -1391,7 +1397,16 @@ echo -e "${RED}ВНИМАНИЕ: Это УНИЧТОЖИТ базу данных
 local att=3
 while [[ $att -gt 0 ]]; do
 echo -ne "Введите 'RESTORE' для подтверждения: "
-read -r cf || exit 1
+if [[ -t 0 ]]; then
+read -r cf
+else
+read -r cf < /dev/tty
+fi
+if [[ -z "$cf" ]]; then
+((att--))
+[[ $att -gt 0 ]] && echo "Попыток: $att" || { echo "Отменено"; exit 0; }
+continue
+fi
 local confirm_upper
 confirm_upper=$(printf '%s' "$cf" | LC_ALL=C tr 'a-z' 'A-Z')
 if [[ "$confirm_upper" == "RESTORE" ]]; then
@@ -1406,8 +1421,10 @@ find_backup_by_date() {
 local td="$1" bf="" md=999999999
 while IFS= read -r f; do
 [[ -z "$f" ]] && continue
-local fd
-fd=$(printf '%s' "$f" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}' || true)
+local fd=""
+if [[ "$f" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}) ]]; then
+fd="${BASH_REMATCH[1]}"
+fi
 if [[ -n "$fd" ]]; then
 local fe te df
 fe=$(date -d "${fd//_/-}" +%s 2>/dev/null || echo 0)
@@ -1421,7 +1438,7 @@ done < <(find "$BACKUP_DIR" -name "*.sql.gz" -type f 2>/dev/null)
 sanitize_backup_path() {
 local path="$1"
 local real_backup_dir
-if [[ -z "$BACKUP_DIR" ]] || [[ "$BACKUP_DIR" == "/" ]]; then
+if [[ -z "$BACKUP_DIR" ]] || [[ "$BACKUP_DIR" == "/" ]] || [[ ! -d "$BACKUP_DIR" ]]; then
 echo ""
 return 1
 fi
@@ -1560,6 +1577,10 @@ local v="$1" d="$2"
 [[ ! "$v" =~ ^[0-9]+$ ]] || [[ "$v" -eq 0 ]] && echo "$d" || echo "$v"
 }
 cleanup_type="${1:-all}"
+if [[ -z "$BACKUP_DIR" ]] || [[ ! -d "$BACKUP_DIR" ]]; then
+log "ERROR" "BACKUP_DIR не задан или не существует"
+exit 1
+fi
 if ! acquire_lock "$CLEANUP_LOCK_FILE"; then
 log "WARN" "Другой процесс очистки уже выполняется"
 exit 0
@@ -1608,6 +1629,7 @@ source "${SCRIPT_DIR}/config.env"
 CRON_FILE="/etc/cron.d/stealthnet-backup"
 install_scheduler() {
 mkdir -p /etc/cron.d || { echo "Ошибка: /etc/cron.d" >&2; return 1; }
+rm -f "$CRON_FILE"
 cat > "$CRON_FILE" << EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
