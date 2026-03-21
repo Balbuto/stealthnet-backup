@@ -40,7 +40,9 @@
 ## 🚀 Быстрый старт
 
 ```bash
-curl -fsSL https://github.com/Balbuto/stealthnet-backup/raw/refs/heads/main/setup-backup.sh | sudo bash -s < /dev/tty
+curl -fsSL https://github.com/Balbuto/stealthnet-backup/raw/refs/heads/main/setup-backup.sh | sudo bash
+
+Либо скачать из репозитория и запустить файл локально.
 ```
 
 После запуска следуйте интерактивным подсказкам для настройки.
